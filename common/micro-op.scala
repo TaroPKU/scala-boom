@@ -17,7 +17,7 @@ import chisel3.util._
 import freechips.rocketchip.config.Parameters
 
 import boom.exu.FUConstants
-
+import boom.lsu.MDP_GHistory_length
 /**
  * Extension to BoomBundle to add a MicroOp
  */
@@ -44,6 +44,7 @@ class MicroOp(implicit p: Parameters) extends BoomBundle
   val debug_inst       = UInt(32.W)
   val is_rvc           = Bool()
   val debug_pc         = UInt(coreMaxAddrBits.W)
+  val mdp_ghist        = UInt(MDP_GHistory_length.length.W)//xq
   val iq_type          = UInt(IQT_SZ.W)        // which issue unit do we use?
   val fu_code          = UInt(FUConstants.FUC_SZ.W) // which functional unit do we use?
   val ctrl             = new CtrlSignals

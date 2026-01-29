@@ -21,6 +21,7 @@ import freechips.rocketchip.rocket.{MStatus, BP, BreakpointUnit}
 
 import boom.common._
 import boom.util.{BoolToChar, MaskUpper}
+import boom.lsu.MDP_GHistory_length
 
 /**
  * Bundle that is made up of converted MicroOps from the Fetch Bundle
@@ -99,7 +100,7 @@ class FetchBuffer(implicit p: Parameters) extends BoomModule
       in_uops(i).edge_inst      := false.B
       in_uops(i).debug_pc       := pc
       in_uops(i).pc_lob         := pc
-
+      in_uops(i).mdp_ghist      := io.enq.bits.ghist.histories(b)(MDP_GHistory_length.length-1,0) //xq
       in_uops(i).is_sfb         := io.enq.bits.sfbs(i) || io.enq.bits.shadowed_mask(i)
 
       if (w == 0) {

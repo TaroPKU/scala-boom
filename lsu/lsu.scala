@@ -218,25 +218,8 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val ldq = Reg(Vec(numLdqEntries, Valid(new LDQEntry)))
   val stq = Reg(Vec(numStqEntries, Valid(new STQEntry)))
 
-
-  //xq: init lwt
-  val lwtConfig = new LWTConfig()
-  val mdp_lwt = RegInit(0.U.asTypeOf(Vec(lwtConfig.numEntries, new LWT_Entry(lwtConfig.predictionWidth))))
-  // 周期清零计时器
-  val lwt_clear_counter = RegInit(0.U(lwtConfig.clearCycleBits.W))
-  val lwt_should_clear = (lwt_clear_counter === (lwtConfig.clearCyclePeriod - 1).U)
-  
-  // 更新计时器
-  lwt_clear_counter := Mux(lwt_should_clear, 0.U, lwt_clear_counter + 1.U)
-  
-  // 周期清零逻辑：每到达周期时清空整个LWT表
-  when (lwt_should_clear)
-  {
-    for (i <- 0 until lwtConfig.numEntries)
-    {
-      mdp_lwt(i).predict := 0.U
-    }
-  }
+  // xq: init mdp (CTX_MDP)
+  val mdp = MDP(MDPParams.ctx_mdp())
 
 
   val ldq_head         = Reg(UInt(ldqAddrSz.W))
@@ -351,7 +334,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ld_enq_idx).bits.observed        := false.B
       ldq(ld_enq_idx).bits.forward_std_val := false.B
 
-      ldq(ld_enq_idx).bits.mdp_wait := mdp_lwt(lwtConfig.extractIndex(io.core.dis_uops(w).bits.debug_pc)).predict.orR//xq
+      ldq(ld_enq_idx).bits.mdp_wait := mdp.get_predict(io.core.dis_uops(w).bits) //xq
       // ldq(ld_enq_idx).bits.mdp_wait := true.B
 
       assert (ld_enq_idx === io.core.dis_uops(w).bits.ldq_idx, "[lsu] mismatch enq load tag.")
@@ -490,7 +473,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   // if mdp_wait Write vAddr into the LAQ
   // Can we fire a incoming load
   val can_fire_load_incoming = widthMap(w => Mux(exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_load, 
-                                                 !ldq(exe_req(w).bits.uop.ldq_idx).bits.mdp_wait , 
+                                                 exe_req(w).bits.mxcpt.valid || !ldq(exe_req(w).bits.uop.ldq_idx).bits.mdp_wait || !((ldq(exe_req(w).bits.uop.ldq_idx).bits.st_dep_mask & ~stq_paddr_mask).orR), 
                                                  false.B))
   for (w <- 0 until memWidth) {
     when (exe_req(w).valid && !can_fire_load_incoming(w) && exe_req(w).bits.uop.ctrl.is_load)
@@ -500,6 +483,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ldq_idx).bits.addr.bits           := exe_req(w).bits.addr
       ldq(ldq_idx).bits.uop.pdst            := exe_req(w).bits.uop.pdst
       ldq(ldq_idx).bits.addr_is_virtual     := true.B
+      ldq(ldq_idx).bits.addr_is_uncacheable := false.B
     }
   }
   // val can_fire_load_incoming = widthMap(w => exe_req(w).valid && exe_req(w).bits.uop.ctrl.is_load)
@@ -1175,7 +1159,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           ((l_forward_stq_idx =/= lcam_stq_idx(w)) && forwarded_is_older)) { // If the load forwarded from us, we might be ok
           ldq(i).bits.order_fail := true.B
           failed_loads(i)        := true.B
-          mdp_lwt(lwtConfig.extractIndex(l_bits.uop.debug_pc)).predict := true.B//xq
+          mdp.update(l_bits.uop) //xq
         }
       } .elsewhen (do_ld_search(w)            &&
                    l_valid                    &&
@@ -1200,11 +1184,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
             io.dmem.s1_kill(w)                 := RegNext(dmem_req_fire(w))
             can_forward(w)                     := false.B
           }
-        }//.elsewhen (l_bits.mdp_wait && (e.st_dep_mask & ~stq_paddr_mask).orR) {
-        //   s1_set_execute(lcam_ldq_idx(w))    := false.B
-        //   io.dmem.s1_kill(w)                 := RegNext(dmem_req_fire(w))
-        //   can_forward(w)                     := false.B
-        // }//mark_xq
+        }
       }
     }
   }
