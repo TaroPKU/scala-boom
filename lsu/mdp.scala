@@ -11,6 +11,8 @@ object MDP_GHistory_length {
 }
 
 class MDP(implicit p: Parameters) extends BoomModule()(p) {
+  val io = IO(new Bundle{}) // 必须定义 io，即使为空
+
   val numL1Entries = 256 // 比如PC直接映射
   val numL2Entries = 256  // PC ^ ghist 映射
   val numL3Entries = 512
@@ -53,7 +55,8 @@ class MDP(implicit p: Parameters) extends BoomModule()(p) {
     Cat(pc_high ^ ghist(xorBits - 1, 0), pc_low)
   }
 
-  def get_predict(uop: MicroOp): (UInt, UInt) = {
+  // 修复返回类型为 (Bool, UInt)
+  def get_predict(uop: MicroOp): (Bool, UInt) = {
     val l1_val = l1_table(get_l1_idx(uop.debug_pc))
     val l2_val = l2_table(get_l2_idx(uop.debug_pc, uop.mdp_ghist))
     val l3_val = l3_table(get_l3_idx(uop.debug_pc, uop.mdp_ghist))
@@ -63,16 +66,16 @@ class MDP(implicit p: Parameters) extends BoomModule()(p) {
     val st_dist = Wire(UInt(3.W))
 
     when(l3_val === 1.U) {
-      wait_state := 1.U // 1+000: 等待全部
+      wait_state := true.B // 修复为 Bool 赋值
       st_dist := 0.U
     }.elsewhen(l2_val =/= 0.U) {
-      wait_state := 1.U // 1: 根据记录等待
+      wait_state := true.B
       st_dist := l2_val
     }.elsewhen(l1_val =/= 0.U) {
-      wait_state := 1.U // 1: 根据记录等待
+      wait_state := true.B
       st_dist := l1_val
     }.otherwise {
-      wait_state := 0.U // 0: 预测无关
+      wait_state := false.B
       st_dist := 0.U
     }
     

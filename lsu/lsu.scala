@@ -53,7 +53,7 @@ import freechips.rocketchip.util.Str
 
 import boom.common._
 import boom.exu.{BrUpdateInfo, Exception, FuncUnitResp, CommitSignals, ExeUnitResp}
-import boom.util.{BoolToChar, AgePriorityEncoder, IsKilledByBranch, GetNewBrMask, WrapInc, IsOlder, UpdateBrMask}
+import boom.util.{BoolToChar, AgePriorityEncoder, IsKilledByBranch, GetNewBrMask, WrapInc, WrapSub, IsOlder, UpdateBrMask}
 
 class LSUExeIO(implicit p: Parameters) extends BoomBundle()(p)
 {
@@ -220,7 +220,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq = Reg(Vec(numStqEntries, Valid(new STQEntry)))
 
   // xq: init mdp (CTX_MDP)
-  val mdp = MDP()
+  val mdp = Module(new MDP())
 
 
   val ldq_head         = Reg(UInt(ldqAddrSz.W))
@@ -446,7 +446,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     val e = ldq(i).bits
     val block = block_load_mask(i) || p1_block_load_mask(i)
     val mdp_st_dep_mask = Mux(e.mdp_st_distance === 0.U, e.st_dep_mask, 
-                              (1.U << WrapSub(e.youngest_stq_idx, e.mdp_st_distance.U, numStqEntries)))
+                              (1.U <<((e.youngest_stq_idx - e.mdp_st_distance + numStqEntries.U) % numStqEntries.U)))
     e.addr.valid && e.addr_is_virtual && !block && (!e.mdp_wait || (!(mdp_st_dep_mask & ~stq_paddr_mask).orR))
   }), ldq_head))//xq
 
