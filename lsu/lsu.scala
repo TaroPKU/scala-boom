@@ -194,6 +194,7 @@ class LDQEntry(implicit p: Parameters) extends BoomBundle()(p)
   val debug_wb_data       = UInt(xLen.W)
 
   val mdp_wait            = Bool() //xq
+  val mdp_st_distance     = UInt(3.W) //xq
 }
 
 class STQEntry(implicit p: Parameters) extends BoomBundle()(p)
@@ -219,7 +220,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq = Reg(Vec(numStqEntries, Valid(new STQEntry)))
 
   // xq: init mdp (CTX_MDP)
-  val mdp = MDP(MDPParams.ctx_mdp())
+  val mdp = MDP()
 
 
   val ldq_head         = Reg(UInt(ldqAddrSz.W))
@@ -334,8 +335,11 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
       ldq(ld_enq_idx).bits.observed        := false.B
       ldq(ld_enq_idx).bits.forward_std_val := false.B
 
-      ldq(ld_enq_idx).bits.mdp_wait := mdp.get_predict(io.core.dis_uops(w).bits) //xq
+      // ldq(ld_enq_idx).bits.mdp_wait := mdp.get_predict(io.core.dis_uops(w).bits) //xq
       // ldq(ld_enq_idx).bits.mdp_wait := true.B
+      val (mdp_wait, mdp_st_dist) = mdp.get_predict(io.core.dis_uops(w).bits)
+      ldq(ld_enq_idx).bits.mdp_wait        := mdp_wait
+      ldq(ld_enq_idx).bits.mdp_st_distance := mdp_st_dist
 
       assert (ld_enq_idx === io.core.dis_uops(w).bits.ldq_idx, "[lsu] mismatch enq load tag.")
       assert (!ldq(ld_enq_idx).valid, "[lsu] Enqueuing uop is overwriting ldq entries")
@@ -421,7 +425,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val p1_block_load_mask = RegNext(block_load_mask)
   val p2_block_load_mask = RegNext(p1_block_load_mask)
 
- // Prioritize emptying the store queue when it is almost full
+  // Prioritize emptying the store queue when it is almost full
   val stq_almost_full = RegNext(WrapInc(WrapInc(st_enq_idx, numStqEntries), numStqEntries) === stq_head ||
                                 WrapInc(st_enq_idx, numStqEntries) === stq_head)
 
@@ -441,7 +445,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val ldq_retry_idx = RegNext(AgePriorityEncoder((0 until numLdqEntries).map(i => {
     val e = ldq(i).bits
     val block = block_load_mask(i) || p1_block_load_mask(i)
-    e.addr.valid && e.addr_is_virtual && !block && (!e.mdp_wait || (!(e.st_dep_mask & ~stq_paddr_mask).orR))
+    val mdp_st_dep_mask = Mux(e.mdp_st_distance === 0.U, e.st_dep_mask, 
+                              (1.U << WrapSub(e.youngest_stq_idx, e.mdp_st_distance.U, numStqEntries)))
+    e.addr.valid && e.addr_is_virtual && !block && (!e.mdp_wait || (!(mdp_st_dep_mask & ~stq_paddr_mask).orR))
   }), ldq_head))//xq
 
   // val ldq_retry_idx = RegNext(AgePriorityEncoder((0 until numLdqEntries).map(i => {
@@ -1159,7 +1165,9 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           ((l_forward_stq_idx =/= lcam_stq_idx(w)) && forwarded_is_older)) { // If the load forwarded from us, we might be ok
           ldq(i).bits.order_fail := true.B
           failed_loads(i)        := true.B
-          mdp.update(l_bits.uop) //xq
+          // 计算存储距离
+          val st_distance = (l_bits.youngest_stq_idx - lcam_stq_idx(w) + numStqEntries.U) % numStqEntries.U
+          mdp.update(l_bits.uop, st_distance.min(7.U).asTypeOf(UInt(3.W))) //xq
         }
       } .elsewhen (do_ld_search(w)            &&
                    l_valid                    &&

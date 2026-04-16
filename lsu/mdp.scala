@@ -4,175 +4,96 @@ import chisel3._
 import chisel3.util._
 
 import freechips.rocketchip.config.Parameters
-import freechips.rocketchip.rocket
-import freechips.rocketchip.tilelink._
-import freechips.rocketchip.util.Str
-
 import boom.common._
 
 object MDP_GHistory_length {
-  val length = 8
+  val length = 6
 }
 
-case class LWTConfig(
-  numEntries: Int = 1024,
-  predictionWidth: Int = 1,
-  pcStartBit: Int = 1,
-  clearCyclePeriod: Int = 2097152
-) {
-  require(isPow2(numEntries), "表大小必须是2的幂")
-  require(clearCyclePeriod > 0, "清零周期必须大于0")
+class MDP(implicit p: Parameters) extends BoomModule()(p) {
+  val numL1Entries = 256 // 比如PC直接映射
+  val numL2Entries = 256  // PC ^ ghist 映射
+  val numL3Entries = 512
 
-  val indexBits: Int = log2Ceil(numEntries)
-  val pcEndBit: Int = pcStartBit + indexBits - 1
-  val clearCycleBits: Int = log2Ceil(clearCyclePeriod)
+  // L1 表项，3bit记录存储距离 (000: 无效, +1 偏移)
+  val l1_table = RegInit(VecInit(Seq.fill(numL1Entries)(0.U(3.W))))
+  // L2 表项，3bit记录存储距离
+  val l2_table = RegInit(VecInit(Seq.fill(numL2Entries)(0.U(3.W))))
+  // 最顶层 L3 表项 (等待全部前序指令)，1bit
+  val l3_table = RegInit(VecInit(Seq.fill(numL3Entries)(0.U(1.W))))
 
-  private val setValueBigInt: BigInt = (BigInt(1) << predictionWidth) - 1
-  val setValue: UInt = setValueBigInt.U(predictionWidth.W)
+  // 独立清零计数器
+  val clearPeriod = 2097152
+  val clearCtr = RegInit(0.U(log2Ceil(clearPeriod).W))
+  val shouldClear = clearCtr === (clearPeriod - 1).U
+  clearCtr := Mux(shouldClear, 0.U, clearCtr + 1.U)
 
-  def extractIndex(pc: UInt): UInt = {
-    require(pc.getWidth > pcEndBit, s"PC宽度${pc.getWidth}不够，需要至少${pcEndBit + 1}位")
-    pc(pcEndBit, pcStartBit)
-  }
-}
-
-class LWT_Entry(val predictWidth: Int = 1)(implicit p: Parameters) extends BoomBundle()(p)
-{
-    val predict = UInt(predictWidth.W)
-}
-
-sealed trait MDPKind
-object MDPKind {
-  case object LWT extends MDPKind
-  case object CTX_MDP extends MDPKind
-}
-
-case class MDPParams(
-  kind: MDPKind,
-  lwt: LWTConfig = LWTConfig(),
-  ctxResetCyclePeriod: Option[Int] = None
-)
-object MDPParams {
-  def lwt(config: LWTConfig = LWTConfig()): MDPParams = MDPParams(MDPKind.LWT, config)
-  def ctx_mdp(config: LWTConfig = LWTConfig(), ctxResetCyclePeriod: Option[Int] = None): MDPParams =
-    MDPParams(MDPKind.CTX_MDP, config, ctxResetCyclePeriod)
-}
-
-object MDP {
-  def apply(params: MDPParams)(implicit p: Parameters): MDP = new MDP(params)
-}
-
-/**
-  * MDP 预测器封装：目前支持 LWT（PC 索引的预测位表），并内建“周期清零”的计数器。
-  *
-  * 设计目标：
-  * - LSU 内只通过 get_predict/update/mdp_reset 使用
-  * - 参数集中在本文件，后续扩展更多 predictor 时只新增 kind 分支
-  */
-final class MDP(params: MDPParams)(implicit p: Parameters) {
-  private val lwtConfig = params.lwt
-
-  private val hasCtx = params.kind match {
-    case MDPKind.CTX_MDP => true
-    case _               => false
+  when(shouldClear) {
+    l1_table.foreach(_ := 0.U)
+    l2_table.foreach(_ := 0.U)
+    l3_table.foreach(_ := 0.U)
   }
 
-  private val ctxNumEntries: Int = 1 << MDP_GHistory_length.length
-  private val ctxResetPeriod: Int = {
-    val defaultRaw = (lwtConfig.clearCyclePeriod / 3) - 7
-    val default = math.max(131072, defaultRaw)
-    params.ctxResetCyclePeriod.getOrElse(default)
+  def get_l1_idx(pc: UInt) = pc(log2Ceil(numL1Entries), 1)
+  def get_l2_idx(pc: UInt, ghist: UInt, xorBits: Int = 2) = {
+    val idxBits = log2Ceil(numL2Entries)
+    val lowBits = idxBits - xorBits
+    
+    val pc_low  = pc(lowBits, 1)
+    val pc_high = pc(idxBits, lowBits + 1)
+    Cat(pc_high ^ ghist(xorBits - 1, 0), pc_low)
   }
-  require(!hasCtx || ctxResetPeriod > 0, "CTX_MDP 清零周期必须大于0")
-
-  private val mdp_lwt = RegInit(
-    0.U.asTypeOf(Vec(lwtConfig.numEntries, new LWT_Entry(lwtConfig.predictionWidth)))
-  )
-
-  private val lwtClearCounter = RegInit(0.U(lwtConfig.clearCycleBits.W))
-  private val lwtShouldClear = lwtClearCounter === (lwtConfig.clearCyclePeriod - 1).U
-  lwtClearCounter := Mux(lwtShouldClear, 0.U, lwtClearCounter + 1.U)
-
-  private val mdp_ctx = if (hasCtx) {
-    Some(RegInit(VecInit(Seq.fill(ctxNumEntries)(false.B))))
-  } else {
-    None
+  def get_l3_idx(pc: UInt, ghist: UInt) = {
+    val idxBits = log2Ceil(numL3Entries)
+    val xorBits = MDP_GHistory_length.length
+    val lowBits = idxBits - xorBits
+    
+    val pc_low  = pc(lowBits, 1)
+    val pc_high = pc(idxBits, lowBits + 1)
+    Cat(pc_high ^ ghist(xorBits - 1, 0), pc_low)
   }
 
-  private val ctxClearCounter = if (hasCtx) {
-    Some(RegInit(0.U(log2Ceil(ctxResetPeriod).W)))
-  } else {
-    None
-  }
-  private val ctxShouldClear: Bool = if (hasCtx) {
-    val ctr = ctxClearCounter.get
-    val should = ctr === (ctxResetPeriod - 1).U
-    ctr := Mux(should, 0.U, ctr + 1.U)
-    should
-  } else {
-    false.B
-  }
+  def get_predict(uop: MicroOp): (UInt, UInt) = {
+    val l1_val = l1_table(get_l1_idx(uop.debug_pc))
+    val l2_val = l2_table(get_l2_idx(uop.debug_pc, uop.mdp_ghist))
+    val l3_val = l3_table(get_l3_idx(uop.debug_pc, uop.mdp_ghist))
 
-  private def reset_lwt(cond: Bool): Unit = {
-    when(cond) {
-      for (i <- 0 until lwtConfig.numEntries) {
-        mdp_lwt(i).predict := 0.U
-      }
+    // 优先最高级历史
+    val wait_state = Wire(Bool())
+    val st_dist = Wire(UInt(3.W))
+
+    when(l3_val === 1.U) {
+      wait_state := 1.U // 1+000: 等待全部
+      st_dist := 0.U
+    }.elsewhen(l2_val =/= 0.U) {
+      wait_state := 1.U // 1: 根据记录等待
+      st_dist := l2_val
+    }.elsewhen(l1_val =/= 0.U) {
+      wait_state := 1.U // 1: 根据记录等待
+      st_dist := l1_val
+    }.otherwise {
+      wait_state := 0.U // 0: 预测无关
+      st_dist := 0.U
     }
+    
+    (wait_state, st_dist)
   }
 
-  private def reset_ctx(cond: Bool): Unit = {
-    if (hasCtx) {
-      when(cond) {
-        for (i <- 0 until ctxNumEntries) {
-          mdp_ctx.get(i) := false.B
-        }
-      }
-    }
-  }
+  def update(uop: MicroOp, conflict_dist: UInt): Unit = {
+    val l1_idx = get_l1_idx(uop.debug_pc)
+    val l2_idx = get_l2_idx(uop.debug_pc, uop.mdp_ghist)
+    val l3_idx = get_l3_idx(uop.debug_pc, uop.mdp_ghist)
 
-  /**
-    * 重置预测表。
-    * - LWT：由 lwtCond 控制
-    * - CTX_MDP 附加表：由 ctxCond 控制（仅在 CTX_MDP 模式下生效）
-    */
-  def mdp_reset(lwtCond: Bool = true.B, ctxCond: Bool = true.B): Unit = {
-    reset_lwt(lwtCond)
-    reset_ctx(ctxCond)
-  }
+    val l1_val = l1_table(l1_idx)
+    val l2_val = l2_table(l2_idx)
 
-  // 周期清零：LWT 与 CTX 表可独立配置周期
-  mdp_reset(lwtCond = lwtShouldClear, ctxCond = ctxShouldClear)
-
-  private def ctx_index(uop: MicroOp): UInt = {
-    val pc_part = uop.debug_pc(MDP_GHistory_length.length, 1)
-    pc_part ^ uop.mdp_ghist
-  }
-
-  /** 查询 uop 的预测结果（true 表示需要 mdp_wait）。 */
-  def get_predict(uop: MicroOp): Bool = {
-    params.kind match {
-      case MDPKind.LWT =>
-        mdp_lwt(lwtConfig.extractIndex(uop.debug_pc)).predict.orR
-      case MDPKind.CTX_MDP =>
-        val lwt_p = mdp_lwt(lwtConfig.extractIndex(uop.debug_pc)).predict.orR
-        val ctx_p = mdp_ctx.get(ctx_index(uop))
-        lwt_p || ctx_p
-    }
-  }
-
-  /** 当 en 为真时更新 uop 对应的预测表项（默认更新）。 */
-  def update(uop: MicroOp, en: Bool = true.B): Unit = {
-    params.kind match {
-      case MDPKind.LWT =>
-        when(en) {
-          mdp_lwt(lwtConfig.extractIndex(uop.debug_pc)).predict := lwtConfig.setValue
-        }
-      case MDPKind.CTX_MDP =>
-        when(en) {
-          mdp_lwt(lwtConfig.extractIndex(uop.debug_pc)).predict := lwtConfig.setValue
-          mdp_ctx.get(ctx_index(uop)) := true.B
-        }
+    // 不一致时进行表级提升
+    when(l1_val === 0.U) {
+      l1_table(l1_idx) := conflict_dist
+    }.elsewhen(l1_val =/= conflict_dist && l2_val === 0.U) {
+      l2_table(l2_idx) := conflict_dist
+    }.elsewhen(l2_val =/= 0.U && l2_val =/= conflict_dist) {
+      l3_table(l3_idx) := 1.U
     }
   }
 }
