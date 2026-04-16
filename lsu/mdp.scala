@@ -10,8 +10,7 @@ object MDP_GHistory_length {
   val length = 6
 }
 
-class MDP(implicit p: Parameters) extends BoomModule()(p) {
-  val io = IO(new Bundle{}) // 必须定义 io，即使为空
+class MDP(implicit p: Parameters) {
 
   val numL1Entries = 256 // 比如PC直接映射
   val numL2Entries = 256  // PC ^ ghist 映射

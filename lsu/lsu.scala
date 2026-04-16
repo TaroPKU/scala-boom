@@ -220,7 +220,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
   val stq = Reg(Vec(numStqEntries, Valid(new STQEntry)))
 
   // xq: init mdp (CTX_MDP)
-  val mdp = Module(new MDP())
+  val mdp = new MDP()
 
 
   val ldq_head         = Reg(UInt(ldqAddrSz.W))
