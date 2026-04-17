@@ -7,14 +7,14 @@ import freechips.rocketchip.config.Parameters
 import boom.common._
 
 object MDP_GHistory_length {
-  val length = 6
+  val length = 4
 }
 
 class MDP(implicit p: Parameters) {
 
-  val numL1Entries = 256 // 比如PC直接映射
-  val numL2Entries = 256  // PC ^ ghist 映射
-  val numL3Entries = 512
+  val numL1Entries = 128 // 比如PC直接映射
+  val numL2Entries = 128  // PC ^ ghist 映射
+  val numL3Entries = 128
 
   // L1 表项，3bit记录存储距离 (000: 无效, +1 偏移)
   val l1_table = RegInit(VecInit(Seq.fill(numL1Entries)(0.U(3.W))))
@@ -24,7 +24,7 @@ class MDP(implicit p: Parameters) {
   val l3_table = RegInit(VecInit(Seq.fill(numL3Entries)(0.U(1.W))))
 
   // 独立清零计数器
-  val clearPeriod = 2097152
+  val clearPeriod = 1048576
   val clearCtr = RegInit(0.U(log2Ceil(clearPeriod).W))
   val shouldClear = clearCtr === (clearPeriod - 1).U
   clearCtr := Mux(shouldClear, 0.U, clearCtr + 1.U)

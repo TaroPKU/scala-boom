@@ -446,7 +446,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
     val e = ldq(i).bits
     val block = block_load_mask(i) || p1_block_load_mask(i)
     val mdp_st_dep_mask = Mux(e.mdp_st_distance === 0.U, e.st_dep_mask, 
-                              (1.U <<((e.youngest_stq_idx - e.mdp_st_distance + numStqEntries.U) % numStqEntries.U)))
+                             (1.U <<((numStqEntries.U + e.youngest_stq_idx - e.mdp_st_distance) % numStqEntries.U))& e.st_dep_mask)
     e.addr.valid && e.addr_is_virtual && !block && (!e.mdp_wait || (!(mdp_st_dep_mask & ~stq_paddr_mask).orR))
   }), ldq_head))//xq
 
@@ -1166,7 +1166,7 @@ class LSU(implicit p: Parameters, edge: TLEdgeOut) extends BoomModule()(p)
           ldq(i).bits.order_fail := true.B
           failed_loads(i)        := true.B
           // 计算存储距离
-          val st_distance = (l_bits.youngest_stq_idx - lcam_stq_idx(w) + numStqEntries.U) % numStqEntries.U
+          val st_distance = (numStqEntries.U + l_bits.youngest_stq_idx - lcam_stq_idx(w)) % numStqEntries.U
           mdp.update(l_bits.uop, st_distance.min(7.U).asTypeOf(UInt(3.W))) //xq
         }
       } .elsewhen (do_ld_search(w)            &&
